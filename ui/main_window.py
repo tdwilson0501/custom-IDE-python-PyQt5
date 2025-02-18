@@ -1,10 +1,10 @@
 import pickle
 import os
 from PyQt5.QtWidgets import (
-    QMainWindow, QTabWidget, QFileDialog, QMessageBox, QVBoxLayout,
-    QWidget, QAction, QSplitter, QTreeView, QFileSystemModel
+    QMainWindow, QTabWidget, QFileDialog, QMessageBox, QVBoxLayout, QWidget, 
+    QAction, QSplitter, QTreeView, QFileSystemModel, QSizePolicy
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QSize
 from ide.editor import CodeEditor
 from ui.console import Console
 from ide.project import create_new_project
@@ -16,12 +16,14 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.setWindowTitle("My Custom IDE")
-        self.setGeometry(100, 100, 1000, 600)
+        self.setGeometry(50, 50, 1600, 900)  # Full-size window
+        self.showMaximized()  # Open full screen by default
 
         layout = QVBoxLayout()
 
-        splitter = QSplitter(Qt.Horizontal)  # Allows resizing between file tree and editor
-        self.project_tree = QTreeView()  # File Explorer Panel
+        self.splitter = QSplitter(Qt.Horizontal)  # Resizable UI
+        self.project_tree = QTreeView()
+        self.project_tree.setMinimumWidth(200)  # Reduce project view width
         self.project_tree.setHidden(True)  # Hide initially
         self.project_tree.doubleClicked.connect(self.open_selected_file)
 
@@ -29,15 +31,25 @@ class MainWindow(QMainWindow):
         self.file_model.setReadOnly(False)
         self.project_tree.setModel(self.file_model)
 
-        self.tabs = QTabWidget()
-        self.tabs.setTabsClosable(True)  # Adds an "X" to close tabs
-        self.tabs.tabCloseRequested.connect(self.close_tab)  # Connect tab close function
+        self.project_tabs = QTabWidget()  # Main project tabs
+        self.project_tabs.setTabsClosable(True)  
+        self.project_tabs.tabCloseRequested.connect(self.close_project_tab)
 
-        splitter.addWidget(self.project_tree)
-        splitter.addWidget(self.tabs)
-        layout.addWidget(splitter)
+        self.tabs = QTabWidget()
+        self.tabs.setTabsClosable(True)
+        self.tabs.tabCloseRequested.connect(self.close_tab)
+
+        self.project_tabs.addTab(self.tabs, "Untitled Project")  # Default tab
+
+        self.splitter.addWidget(self.project_tree)
+        self.splitter.addWidget(self.project_tabs)
+        self.splitter.setStretchFactor(1, 4)  # Prioritize the text editor space
+
+        layout.addWidget(self.splitter)
 
         self.console = Console()
+        self.console.setMinimumHeight(100)  # Reduce console height
+        self.console.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         layout.addWidget(self.console)
 
         central_widget = QWidget()
@@ -60,6 +72,10 @@ class MainWindow(QMainWindow):
         new_project_action.triggered.connect(self.new_project)
         file_menu.addAction(new_project_action)
 
+        open_project_action = QAction("Open Project", self)  # Added "Open Project"
+        open_project_action.triggered.connect(self.open_project)
+        file_menu.addAction(open_project_action)
+
         open_file_action = QAction("Open File", self)
         open_file_action.triggered.connect(self.open_file)
         file_menu.addAction(open_file_action)
@@ -78,7 +94,14 @@ class MainWindow(QMainWindow):
 
     def new_project(self):
         create_new_project()
-        self.load_project()  # Reload file tree after creating a project
+        self.load_project()
+
+    def open_project(self):  # New: Open existing project
+        project_path = QFileDialog.getExistingDirectory(self, "Select Project Directory")
+        if project_path:
+            new_tab = QTabWidget()
+            self.project_tabs.addTab(new_tab, os.path.basename(project_path))
+            self.load_project(project_path)
 
     def open_file(self):
         file_name, _ = QFileDialog.getOpenFileName(self, "Open File", "", "Python Files (*.py);;All Files (*)")
@@ -102,16 +125,10 @@ class MainWindow(QMainWindow):
             self.close_tab(index)
 
     def close_tab(self, index):
-        editor = self.tabs.widget(index)
-        if editor.document().isModified():
-            reply = QMessageBox.warning(self, "Unsaved Changes",
-                                        "You have unsaved changes. Do you want to save before closing?",
-                                        QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel)
-            if reply == QMessageBox.Yes:
-                self.save_file(index)
-            elif reply == QMessageBox.Cancel:
-                return
         self.tabs.removeTab(index)
+
+    def close_project_tab(self, index):
+        self.project_tabs.removeTab(index)
 
     def save_session(self):
         open_files = []
@@ -136,8 +153,8 @@ class MainWindow(QMainWindow):
         if not path:
             path = QFileDialog.getExistingDirectory(self, "Select Project Directory")
             if not path:
-                return  # User canceled
+                return
 
         self.file_model.setRootPath(path)
         self.project_tree.setRootIndex(self.file_model.index(path))
-        self.project_tree.setHidden(False)  # Show the project explorer
+        self.project_tree.setHidden(False)

@@ -1,5 +1,5 @@
 from PyQt5.QtWidgets import QWidget, QPlainTextEdit
-from PyQt5.QtGui import QPainter, QColor, QFont, QTextFormat, QSyntaxHighlighter, QTextCharFormat
+from PyQt5.QtGui import QPainter, QColor, QFont, QTextFormat, QSyntaxHighlighter, QTextCharFormat, QKeyEvent
 from PyQt5.QtCore import Qt, QRect, QRegExp
 
 class LineNumberArea(QWidget):
@@ -17,6 +17,7 @@ class CodeEditor(QPlainTextEdit):
     def __init__(self):
         super().__init__()
         self.setFont(QFont("Consolas", 12))
+        self.setTabStopDistance(4 * self.fontMetrics().horizontalAdvance(' '))
 
         self.lineNumberArea = LineNumberArea(self)
         self.setViewportMargins(self.lineNumberAreaSize(), 0, 0, 0)  # Fixed usage
@@ -28,6 +29,12 @@ class CodeEditor(QPlainTextEdit):
         super().resizeEvent(event)
         rect = self.contentsRect()
         self.lineNumberArea.setGeometry(rect.left(), rect.top(), self.lineNumberAreaSize(), rect.height())
+
+    def keyPressEvent(self, event: QKeyEvent):
+        if event.key() == Qt.Key_Tab:
+            self.insertPlainText("    ")  # Convert tab to 4 spaces
+            return
+        super().keyPressEvent(event)
 
     def lineNumberAreaPaintEvent(self, event):
         painter = QPainter(self.lineNumberArea)
