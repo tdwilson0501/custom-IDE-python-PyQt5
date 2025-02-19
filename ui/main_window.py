@@ -88,6 +88,12 @@ class MainWindow(QMainWindow):
         close_file_action = QAction("Close File", self)
         close_file_action.triggered.connect(lambda: self.close_file())
         file_menu.addAction(close_file_action)
+        
+        view_menu = self.menu_bar.addMenu("View")
+
+        toggle_theme_action = QAction("Toggle Theme", self)
+        toggle_theme_action.triggered.connect(self.console.toggle_theme)
+        view_menu.addAction(toggle_theme_action)
 
     def new_file(self):
         """Create a new file inside the currently active project."""

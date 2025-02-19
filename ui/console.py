@@ -1,101 +1,188 @@
 import os
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTextEdit
-from PyQt5.QtCore import QProcess, Qt, QEvent
+from PyQt5.QtCore import Qt, QEvent
+from PyQt5.QtWidgets import (
+    QWidget, QPlainTextEdit, QLineEdit
+)
+from PyQt5.QtGui import QFont, QTextCursor
+from PyQt5.QtCore import QProcess
 
 class Console(QWidget):
-    def __init__(self):
-        super().__init__()
+    """
+    A 'read-only' console that displays PowerShell/Bash output in QPlainTextEdit,
+    and overlays a QLineEdit exactly at the end of the last line (the shell prompt).
+    """
 
-        layout = QVBoxLayout()
+    def __init__(self, parent=None):
+        super().__init__(parent)
 
-        self.terminal = QTextEdit()
-        self.terminal.setReadOnly(False)  # Allow typing
-        self.terminal.setFontFamily("Consolas")
-        self.terminal.setFontPointSize(12)
-        self.set_theme("dark")
+        # Create the read-only text area
+        self.output_area = QPlainTextEdit(self)
+        self.output_area.setReadOnly(True)
+        self.output_area.setFont(QFont("Consolas", 12))
 
-        layout.addWidget(self.terminal)
-        self.setLayout(layout)
+        # Create the input line that we overlay
+        self.input_box = QLineEdit(self)
+        self.input_box.setFont(QFont("Consolas", 12))
+        self.input_box.returnPressed.connect(self.on_enter_pressed)
 
-        # ADD: Keep track of the earliest position the user is allowed to edit.
-        self.prompt_position = 0
+        # Make sure the input box is on top of the output_area
+        self.input_box.raise_()
 
-        # ADD: Install an event filter on the terminal to block edits above prompt_position.
-        self.terminal.installEventFilter(self)
-
+        # Start the shell process
         self.process = QProcess(self)
         self.process.setProcessChannelMode(QProcess.MergedChannels)
-        self.process.readyReadStandardOutput.connect(self.display_output)
-        self.process.readyReadStandardError.connect(self.display_output)
-
         if os.name == "nt":
             self.process.start("powershell", ["-NoExit"])
         else:
             self.process.start("bash", ["--login"])
 
-        self.terminal.append("[INFO] Terminal started.\n")
-        # EDIT: Update prompt_position to prevent deleting the initial text.
-        self.prompt_position = len(self.terminal.toPlainText())
+        self.process.readyReadStandardOutput.connect(self.on_process_output)
+        self.process.readyReadStandardError.connect(self.on_process_output)
 
-    def display_output(self):
-        """Read and display process output."""
-        output = self.process.readAll().data().decode().strip()
-        if output:
-            self.terminal.append(output)
-            # EDIT: Update prompt_position so newly printed text cannot be edited.
-            self.prompt_position = len(self.terminal.toPlainText())
+        # Keep track of commands for history
+        self.command_history = []
+        self.history_index = -1  # -1 means not browsing history
 
-    def keyPressEvent(self, event):
-        """Capture keypress events to send commands."""
-        # If user presses Enter (without Shift), parse the last line and execute.
-        if event.key() == Qt.Key_Return and not (event.modifiers() & Qt.ShiftModifier):
-            command = self.terminal.toPlainText().split("\n")[-1].strip()
-            if command:
-                self.execute_command(command)
-        else:
-            # ADD: Prevent destructive keys from going before prompt_position.
-            if event.key() in (Qt.Key_Backspace, Qt.Key_Delete, 
-                               Qt.Key_Left, Qt.Key_Up, Qt.Key_PageUp, Qt.Key_Home):
-                cursor = self.terminal.textCursor()
-                # If the cursor is at or before prompt_position, block the key.
-                if cursor.position() <= self.prompt_position:
-                    return
-            super().keyPressEvent(event)
+        # Force the layout so that output_area takes the entire widget,
+        # and we'll position the input_box manually in resizeEvent().
+        self.output_area.setGeometry(self.rect())
+        # We also keep forcing a scroll to bottom so we always see the prompt.
+        self.output_area.verticalScrollBar().rangeChanged.connect(
+            lambda: self.output_area.verticalScrollBar().setValue(
+                self.output_area.verticalScrollBar().maximum()
+            )
+        )
 
-    # ADD: Block mouse clicks that place the cursor above prompt_position.
-    def eventFilter(self, obj, event):
-        if obj == self.terminal:
-            if event.type() == QEvent.MouseButtonPress:
-                # Let the default happen first.
-                result = super().eventFilter(obj, event)
-                # Then correct the cursor if it's before prompt_position.
-                cursor = self.terminal.textCursor()
-                if cursor.position() < self.prompt_position:
-                    cursor.setPosition(self.prompt_position)
-                    self.terminal.setTextCursor(cursor)
-                return True
-        return super().eventFilter(obj, event)
+        # For theming
+        self.current_theme = "dark"
+        self.apply_theme("dark")
 
-    def execute_command(self, command):
-        """Send command to PowerShell or Bash."""
-        if self.process and self.process.state() == QProcess.Running:
+        # Show an initial info message
+        self.append_text("[INFO] Shell started.\n")
+
+    #
+    # LAYOUT / RESIZING
+    #
+    def resizeEvent(self, event):
+        """
+        Whenever this widget is resized, make the output_area fill it,
+        then reposition the input line at the end of the last line.
+        """
+        super().resizeEvent(event)
+        # Make the output_area fill the entire Console widget
+        self.output_area.setGeometry(self.rect())
+        # Then place the input box at the correct spot
+        self.position_input_line()
+
+    def position_input_line(self):
+        """
+        Re-calculate where the cursor is (i.e. at the shell prompt)
+        and move the input box so that it sits exactly at that position.
+        """
+        # EDIT: Instead of manually calculating via document layout,
+        # we use the output_area's current text cursor.
+        self.output_area.moveCursor(QTextCursor.End)
+        # Get the cursor rect (coordinates relative to the viewport)
+        cursor_rect = self.output_area.cursorRect()
+        # Map the cursor rect's top-left to the Console widget coordinates
+        mapped_pos = self.output_area.viewport().mapTo(self, cursor_rect.topLeft())
+        # Place the input box slightly to the right of the cursor
+        self.input_box.move(mapped_pos.x() + 5, mapped_pos.y())
+        # Resize the input box to fill the remaining width (with some margin)
+        self.input_box.resize(self.width() - mapped_pos.x() - 15, self.input_box.sizeHint().height())
+
+    #
+    # PROCESS OUTPUT
+    #
+    def on_process_output(self):
+        data = self.process.readAll().data().decode("utf-8", errors="replace")
+        if data:
+            self.append_text(data)
+
+    def append_text(self, text: str):
+        self.output_area.moveCursor(QTextCursor.End)
+        self.output_area.insertPlainText(text)
+        # Force scroll to bottom so we see the prompt
+        self.output_area.verticalScrollBar().setValue(
+            self.output_area.verticalScrollBar().maximum()
+        )
+        # Update input box position
+        self.position_input_line()
+
+    #
+    # USER TYPED A COMMAND
+    #
+    def on_enter_pressed(self):
+        command = self.input_box.text().rstrip()
+        if command:
+            # Add to history
+            self.command_history.append(command)
+            self.history_index = -1
+            # Echo it in the console
+            self.append_text(command + "\n")
+            # Send to shell
             self.process.write((command + "\n").encode())
-            self.terminal.append(f"> {command}")  # Display typed command
-            # EDIT: Update prompt_position to protect the just-entered command.
-            self.prompt_position = len(self.terminal.toPlainText())
+        # Clear input
+        self.input_box.clear()
 
-    def update_path(self, new_path):
-        """Change working directory inside the embedded terminal."""
-        if self.process and self.process.state() == QProcess.Running:
-            command = f'cd "{new_path}"' if os.name == "nt" else f'cd "{new_path}"'
-            self.execute_command(command)
-            self.terminal.append(f"[Changed directory to: {new_path}]\n")
-            # EDIT: Update prompt_position again.
-            self.prompt_position = len(self.terminal.toPlainText())
+    #
+    # OPTIONAL: HISTORY WITH UP/DOWN
+    #
+    def keyPressEvent(self, event):
+        """
+        If user presses Up/Down when the input_box has focus, cycle history.
+        We forward these to input_box if it is focused.  Another approach is
+        to install an eventFilter on self.input_box.
+        """
+        if self.input_box.hasFocus():
+            if event.key() == Qt.Key_Up:
+                if self.command_history:
+                    # If not browsing, pick last
+                    if self.history_index == -1:
+                        self.history_index = len(self.command_history) - 1
+                    else:
+                        self.history_index = max(0, self.history_index - 1)
+                    self.input_box.setText(self.command_history[self.history_index])
+                return
+            elif event.key() == Qt.Key_Down:
+                if self.command_history and self.history_index != -1:
+                    self.history_index += 1
+                    if self.history_index >= len(self.command_history):
+                        self.history_index = -1
+                        self.input_box.clear()
+                    else:
+                        self.input_box.setText(self.command_history[self.history_index])
+                return
+        super().keyPressEvent(event)
 
-    def set_theme(self, theme):
-        """Switch between light and dark mode."""
-        if theme == "dark":
-            self.terminal.setStyleSheet("background-color: black; color: white;")
+    #
+    # THEME TOGGLING
+    #
+    def toggle_theme(self):
+        if self.current_theme == "dark":
+            self.apply_theme("light")
+            self.current_theme = "light"
         else:
-            self.terminal.setStyleSheet("background-color: white; color: black;")
+            self.apply_theme("dark")
+            self.current_theme = "dark"
+
+    def apply_theme(self, theme):
+        if theme == "dark":
+            self.output_area.setStyleSheet("QPlainTextEdit { background: black; color: white; }")
+            self.input_box.setStyleSheet("QLineEdit { background: black; color: white; border: 1px solid gray; }")
+        else:
+            self.output_area.setStyleSheet("QPlainTextEdit { background: white; color: black; }")
+            self.input_box.setStyleSheet("QLineEdit { background: white; color: black; border: 1px solid gray; }")
+
+    #
+    # EXTERNAL API: cd to new path if needed
+    #
+    def update_path(self, new_path):
+        if self.process and self.process.state() == QProcess.Running:
+            self.process.write(f'cd "{new_path}"\n'.encode())
+
+    def closeEvent(self, event):
+        """Clean up the process on close."""
+        if self.process and self.process.state() == QProcess.Running:
+            self.process.terminate()
+        super().closeEvent(event)
